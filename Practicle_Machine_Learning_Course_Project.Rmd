@@ -1,0 +1,197 @@
+---
+title: "Practicle Machine Learning Course Project"
+author: "Joe Barter"
+date: "8/26/2019"
+output: html_document
+---
+# Executive Summary
+The goal of this project is to use data collected from accelerometers on the belt, forearm, arm, and dumbell of 6 participants to predict how well the participants from the study performed the activities.  After exploritory data analysis was performed, the datasets were refined to facilitate prediction modeling. An effective model was trained and tested. This model was also evaluated against the validation dataset.  Preprocessing with principal component analysis combined with the use of random forest and cross validation were key to the solution.  
+
+# Exploratory Data Analysis
+## Set up environment
+```{r setup, echo=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# ensure a clean environment
+rm(list=ls())
+# get libraries
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(stats))
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(caret))
+
+# set seed to create reproducable results
+set.seed(456789)
+```
+
+
+## Get and load the data
+```{r echo=TRUE, message=FALSE}
+#fetch the data
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", destfile = "pml-training.csv", method = "curl")
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", destfile = "pml-testing.csv", method = "curl")
+
+#load the data
+trainingDs_raw <-  read.csv("./pml-training.csv", na.strings=c("","NA"))  # ensure empty values get set to NA
+testingDs_raw <-  read.csv("./pml-testing.csv", na.strings=c("","NA"))  # ensure empty values get set to NA
+```
+Note that the read.csv statements convert empty string values to NA.  This will help in identifying fields that do not contain useful information. 
+
+## Initial scout of the data
+Initial discovery to get a high level understanding of the data: i.e. size, shape, and populations of the datasets. 
+
+### Training data file
+```{r echo=TRUE, message=FALSE}
+dim(trainingDs_raw)
+# str(trainingDs_raw)  # full str for data
+str(trainingDs_raw[,1:15])  # this is enough for the write up 
+```
+### Testing data file
+This dataset will ultimately be used for validataion.  
+```{r echo=TRUE, message=FALSE}
+dim(testingDs_raw)
+# str(testingDs_raw)  # full str for data
+str(testingDs_raw[,1:15])  # this is enough for the write up 
+```
+### Look for potential empty fields in the training and testing datasets 
+```{r echo=TRUE, message=FALSE}
+head(colSums(is.na(trainingDs_raw)), n = 20)  #remove head to see the full results
+head(colSums(is.na(testingDs_raw)), n=20)  #remove head to see the full results
+```
+There are potentially `r sum(colSums(is.na(trainingDs_raw)) == 19216)` empty fields in the training data and potentially `r sum(colSums(is.na(testingDs_raw)) == 20)` empty fields in the testing data.
+
+
+## Observation across training and testing input files
+There are a lot of fields in the raw data files.  It is likely that not all of the fields will be needed to do meaningful prediction modeling.  
+After scouting through the datasets the following observations can be made.
+
+* The training and testing layout differ in only one field (final field classe (training) vs. problem_id (testing))
+    + training$classe = outcome.
+    + testing$problem_id = identifier for the testing case
+* The first seven fields of each file are used to hold tracking information about the the test results.  These fields do not hold test result data itself.  
+    + These will be little use for modeling
+    + The list of field names that contain tracking information follows
+
+```{r echo=FALSE, message=FALSE}
+names(testingDs_raw[1:7])
+```
+* Empty fields 
+    + There are `r sum(colSums(is.na(trainingDs_raw)) == 19216)` fields that are potentially empty in both training and testing sets
+    + These fields are the same in both testing and training datasets
+    + For the potentially empty fields, all of the records that have non NA values for those fields have the field **new_window = 'yes'** 
+    + After further investigation, the **new_window** field is a flag for a summary record.  
+    + There are no summary records in the testing dataset
+
+## Exploratory Data Analysis Conclusions
+Exploring and analyzing the raw input files resulted in the following action plan to refine the raw data into the dataset to be used for prediction modeling.
+
+* Simplify the dataset to contian only usable record and fields
+    + Drop summary records (i.e. new_window = 'yes')
+    + Drop fields that only contain record tracking information (i.e. fields 1:7)
+    + Drop fields that are empty in both the train and test datasets (i.e. fields that contain only NA)
+            
+# Refining the dataset to for prediction modeling
+Per the recommendations above, the raw training dataset can be refined to facilitate the prediction modeling work.  The refinements follow.
+
+### Drop the summary frame records and fields that don't contain data
+```{r echo=TRUE, message=FALSE}
+trainSansSummary <- subset(trainingDs_raw, trainingDs_raw$new_window != "yes")
+```
+### Drop the fields that don't contain data
+```{r echo=TRUE, message=FALSE}
+nonSummaryRowsCount  <- dim(trainSansSummary)[1]
+trainingDs_refined <- trainSansSummary[, colSums(is.na(trainSansSummary)) != nonSummaryRowsCount ]
+```
+
+### Drop the fields used to track the record handle information (i.e. X, user, time, window)
+```{r echo=TRUE, message=FALSE}
+#### take out the fields used to track the record handle information (i.e. X, user, time, window)
+trainingDs_refined <-  trainingDs_refined[ , !(colnames(trainingDs_refined) %in% names(trainingDs_refined[1:7]))]
+```
+
+## Verify all the remaining fields have data
+```{r echo=TRUE, message=FALSE}
+dim(trainingDs_refined )
+# names(trainingDs_refined)  # show names of remaining fields
+colSums(is.na(trainingDs_refined ))
+```
+ The refined dataset contain `r dim(trainingDs_refined )[2]` fields that contain data that will be used for analysis and prediction. 
+
+
+# Create training, testing, and validation datasets
+With `r dim(trainingDs_refined)[1]` records in the training dataset, there is a sufficient amount of data to allow the training dataset to be split up for training and testing. The initial testing dataset of `r dim(testingDs_raw)[1]` record will be used as the validation dataset. 
+```{r echo=TRUE, message=FALSE}
+#inTrain = createDataPartition(trainingDs_refined$classe, p = 0.1, list = FALSE) # for quick scouting
+inTrain = createDataPartition(trainingDs_refined$classe, p = 0.7, list = FALSE)
+
+trainingDs = trainingDs_refined[ inTrain,]
+testingDs = trainingDs_refined[-inTrain,]
+
+validationDs <- testingDs_raw
+
+dim(trainingDs)
+dim(testingDs)
+dim(validationDs)
+```
+
+
+
+# Scout for correlated predictors 
+
+Focusing our efforts on just the variables that contain useful data, we have reduced the number of variables from `r dim(trainingDs_raw)[2]` to `r dim(trainingDs)[2]`.  Unfortunately, that is still a lot of variables to evaluate. There is a strong likelihood that some of these variables will be highly correlated with each other.  This is a good time to use Principle Component Analysis to identify a reduced set of variables that capture most of the meaning.  
+
+```{r echo=TRUE, message=FALSE}
+m <- abs(cor(trainingDs[,-53])) # get the corre
+diag(m) <- 0
+which (m > 0.8, arr.ind = TRUE)
+```
+We have a lot of variables that have correlation.  It will be useful to use principle component analysis to approach this problem space. 
+
+## Preprocessing with principal component analysis
+Preprocessing with with principal component analysis will be done using the caret packages train method.  The cross validation method (i.e. **cv**) with 3 resampling iterations will be utilized.  
+
+### Fit the model
+```{r echo=TRUE,  cacheChunk3, cache=TRUE, message=FALSE}
+#modelFit <- train(x = trainingDs, y=trainingDs$classe, method="rf", preprocess= "pca")
+modelFit <- train(x = trainingDs[,-53], y=trainingDs$classe, method="rf", preprocess= "pca",trControl = trainControl(method="cv"), number=3)
+```
+### Understanding the model
+View Modelfit information
+```{r echo=TRUE, message=FALSE}
+modelFit
+```
+
+Most important variables
+```{r echo=TRUE, message=FALSE}
+varImp(modelFit)
+```
+
+    
+### Check the fit model with testing dataset
+```{r echo=TRUE, message=FALSE}
+# check against testing dataset
+cmPcaTesting <- confusionMatrix(testingDs$classe, predict(modelFit, testingDs[,-53]))
+cmPcaTesting
+```
+
+### Calculate out of sample error for testing dataset
+```{r echo=TRUE, message=FALSE}
+OutOfSampleError <- as.numeric(1- cmPcaTesting$overall[1])
+OutOfSampleError
+```
+
+# Test against Validation Data Set
+```{r echo=TRUE, message=FALSE}
+validationPred <- predict(modelFit, validationDs)
+validationPred
+```
+Using the quiz associated with the course project, this prediction is 100% accurate.  That led to a lot of checking and rechecking on my part, but I believe that my answer set is correctly generated and correct.  Some possible reason for the very high accuracy rate on the validation set are 
+
+* The validation set only has 20 records to check
+* The summary records were removed from the training and testing datasets due to the fact that the validation set did not have any summary records
+
+
+
+# Conclusion
+A prediction model created via random forest leveraging preprocessing via principal component analysis with cross validation was definitely an effective strategy for this dataset.  It is worth noting that exploring, analyzing, and refining the raw input data were key steps in coming up with an effective solution.  
+
